@@ -1,0 +1,32 @@
+# Standalone Qwen3-TTS service for testing
+# Usage: docker compose -f docker/qwen3/docker-compose.yml up
+services:
+  tts:
+    build:
+      context: ../..
+      dockerfile: docker/qwen3/Dockerfile
+    ports:
+      - "8880:8880"
+    environment:
+      - TTS_ENGINE=qwen3
+      - USE_GPU=true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - qwen3_models:/app/models
+      - ../../voices/qwen3:/app/voices/qwen3
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8880/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 120s  # Model loading + torch.compile warmup takes time
+
+volumes:
+  qwen3_models:
+    driver: local
