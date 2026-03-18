@@ -78,19 +78,21 @@ def test_list_models(mock_openai_mappings):
     data = response.json()
     assert data["object"] == "list"
     assert isinstance(data["data"], list)
-    assert len(data["data"]) == 3  # tts-1, tts-1-hd, and kokoro
+    assert len(data["data"]) == 5  # tts-1, tts-1-hd, kokoro, qwen3-tts, qwen3-tts-sm
 
     # Verify all expected models are present
     model_ids = [model["id"] for model in data["data"]]
     assert "tts-1" in model_ids
     assert "tts-1-hd" in model_ids
     assert "kokoro" in model_ids
+    assert "qwen3-tts" in model_ids
+    assert "qwen3-tts-sm" in model_ids
 
     # Verify model format
     for model in data["data"]:
         assert model["object"] == "model"
         assert "created" in model
-        assert model["owned_by"] == "kokoro"
+        assert model["owned_by"] in ("kokoro", "qwen")
 
 
 def test_retrieve_model(mock_openai_mappings):

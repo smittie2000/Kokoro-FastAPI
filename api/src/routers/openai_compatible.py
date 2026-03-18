@@ -471,6 +471,18 @@ async def list_models():
                 "created": 1686935002,
                 "owned_by": "kokoro",
             },
+            {
+                "id": "qwen3-tts",
+                "object": "model",
+                "created": 1686935002,
+                "owned_by": "qwen",
+            },
+            {
+                "id": "qwen3-tts-sm",
+                "object": "model",
+                "created": 1686935002,
+                "owned_by": "qwen",
+            },
         ]
 
         return {"object": "list", "data": models}
@@ -509,6 +521,18 @@ async def retrieve_model(model: str):
                 "object": "model",
                 "created": 1686935002,
                 "owned_by": "kokoro",
+            },
+            "qwen3-tts": {
+                "id": "qwen3-tts",
+                "object": "model",
+                "created": 1686935002,
+                "owned_by": "qwen",
+            },
+            "qwen3-tts-sm": {
+                "id": "qwen3-tts-sm",
+                "object": "model",
+                "created": 1686935002,
+                "owned_by": "qwen",
             },
         }
 
