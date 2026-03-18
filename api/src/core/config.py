@@ -1,4 +1,7 @@
+from typing import Literal
+
 import torch
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -20,6 +23,22 @@ class Settings(BaseSettings):
     use_gpu: bool = True  # Whether to use GPU acceleration if available
     device_type: str | None = (
         None  # Will be auto-detected if None, can be "cuda", "mps", or "cpu"
+    )
+
+    # Engine Selection
+    tts_engine: Literal["kokoro", "qwen3"] = Field(
+        default="kokoro",
+        description="TTS engine to use: kokoro (default), qwen3 (Qwen3-TTS streaming)"
+    )
+
+    # Qwen3-TTS Settings
+    qwen3_voices_dir: str = Field(
+        default="voices/qwen3",
+        description="Directory containing Qwen3 voice profiles (ref.wav + ref.json)"
+    )
+    qwen3_model_path: str = Field(
+        default="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        description="HuggingFace model ID or local path for Qwen3-TTS"
     )
     allow_local_voice_saving: bool = (
         False  # Whether to allow saving combined voices locally
