@@ -35,6 +35,7 @@ class TTSService:
         self.output_dir = output_dir
         self.model_manager = None
         self._voice_manager = None
+        self._qwen3_voice_manager = None  # Lazy-initialized for Qwen3 engine
 
     @classmethod
     async def create(cls, output_dir: str = None) -> "TTSService":
@@ -42,6 +43,12 @@ class TTSService:
         service = cls(output_dir)
         service.model_manager = await get_model_manager()
         service._voice_manager = await get_voice_manager()
+
+        # Initialize Qwen3 voice manager if engine is qwen3
+        if settings.tts_engine == "qwen3":
+            from ..inference.qwen3_voice_manager import Qwen3VoiceManager
+            service._qwen3_voice_manager = Qwen3VoiceManager(settings.qwen3_voices_dir)
+
         return service
 
     async def _process_chunk(
@@ -91,7 +98,8 @@ class TTSService:
                 backend = self.model_manager.get_backend()
 
                 # Generate audio using pre-warmed model
-                if isinstance(backend, KokoroV1):
+                from ..inference.qwen3_tts import Qwen3TTS
+                if isinstance(backend, (KokoroV1, Qwen3TTS)):
                     chunk_index = 0
                     # For Kokoro V1, pass text and voice info with lang_code
                     async for chunk_data in self.model_manager.generate(
@@ -101,7 +109,8 @@ class TTSService:
                         lang_code=lang_code,
                         return_timestamps=return_timestamps,
                     ):
-                        chunk_data.audio*=volume_multiplier
+                        if volume_multiplier != 1.0:
+                            chunk_data.audio = (chunk_data.audio.astype(np.float32) * volume_multiplier).astype(chunk_data.audio.dtype)
                         # For streaming, convert to bytes
                         if output_format:
                             try:
@@ -188,6 +197,14 @@ class TTSService:
         Raises:
             RuntimeError: If voice not found
         """
+        # Qwen3 voices are directories, not .pt files.
+        # Return the voice name and its directory path.
+        if self._qwen3_voice_manager is not None:
+            voice_dir = os.path.join(settings.qwen3_voices_dir, voice)
+            if os.path.isdir(voice_dir):
+                return voice, voice_dir
+            raise RuntimeError(f"Qwen3 voice not found: {voice}")
+
         try:
             # Split the voice on + and - and ensure that they get added to the list eg: hi+bob = ["hi","+","bob"]
             split_voice = re.split(r"([-+])", voice)
@@ -284,6 +301,39 @@ class TTSService:
             logger.info(
                 f"Using lang_code '{pipeline_lang_code}' for voice '{voice_name}' in audio stream"
             )
+
+            # Qwen3-TTS handles its own text processing — skip Kokoro phonemizer.
+            # Just split on sentence boundaries for manageable chunk sizes.
+            if settings.tts_engine == "qwen3":
+                sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+                for i, sentence in enumerate(sentences):
+                    if not sentence.strip():
+                        continue
+                    async for chunk_data in self._process_chunk(
+                        sentence, [], voice_name, voice_path, speed, writer,
+                        output_format, is_first=(i == 0),
+                        volume_multiplier=volume_multiplier,
+                        normalizer=stream_normalizer,
+                        lang_code=pipeline_lang_code,
+                        return_timestamps=return_timestamps,
+                    ):
+                        if chunk_data.audio is not None and len(chunk_data.audio) > 0:
+                            current_offset += len(chunk_data.audio) / 24000
+                        if chunk_data.output is not None or (chunk_data.audio is not None and len(chunk_data.audio) > 0):
+                            yield chunk_data
+                    chunk_index += 1
+
+                # Finalize the stream
+                if chunk_index > 0:
+                    async for chunk_data in self._process_chunk(
+                        "", [], voice_name, voice_path, speed, writer,
+                        output_format, is_first=False, is_last=True,
+                        volume_multiplier=volume_multiplier,
+                        normalizer=stream_normalizer, lang_code=pipeline_lang_code,
+                    ):
+                        if chunk_data.output is not None:
+                            yield chunk_data
+                return  # Skip the Kokoro smart_split flow below
 
             # Process text in chunks with smart splitting, handling pause tags
             async for chunk_text, tokens, pause_duration_s in smart_split(
@@ -443,6 +493,8 @@ class TTSService:
 
     async def list_voices(self) -> List[str]:
         """List available voices."""
+        if self._qwen3_voice_manager is not None:
+            return self._qwen3_voice_manager.list_voices()
         return await self._voice_manager.list_voices()
 
     async def generate_from_phonemes(
