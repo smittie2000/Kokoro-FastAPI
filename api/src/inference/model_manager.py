@@ -1,4 +1,4 @@
-"""Kokoro V1 model management."""
+"""TTS model management with engine selection."""
 
 from typing import Optional
 
@@ -8,7 +8,6 @@ from ..core import paths
 from ..core.config import settings
 from ..core.model_config import ModelConfig, model_config
 from .base import BaseModelBackend
-from .kokoro_v1 import KokoroV1
 
 
 class ModelManager:
@@ -24,7 +23,7 @@ class ModelManager:
             config: Optional model configuration override
         """
         self._config = config or model_config
-        self._backend: Optional[KokoroV1] = None  # Explicitly type as KokoroV1
+        self._backend: Optional[BaseModelBackend] = None
         self._device: Optional[str] = None
 
     def _determine_device(self) -> str:
@@ -32,14 +31,21 @@ class ModelManager:
         return "cuda" if settings.use_gpu else "cpu"
 
     async def initialize(self) -> None:
-        """Initialize Kokoro V1 backend."""
+        """Initialize backend based on configured engine."""
         try:
             self._device = self._determine_device()
-            logger.info(f"Initializing Kokoro V1 on {self._device}")
-            self._backend = KokoroV1()
+            engine = settings.tts_engine
+            logger.info(f"Initializing {engine} engine on {self._device}")
+
+            if engine == "qwen3":
+                from .qwen3_tts import Qwen3TTS
+                self._backend = Qwen3TTS(voices_dir=settings.qwen3_voices_dir)
+            else:
+                from .kokoro_v1 import KokoroV1
+                self._backend = KokoroV1()
 
         except Exception as e:
-            raise RuntimeError(f"Failed to initialize Kokoro V1: {e}")
+            raise RuntimeError(f"Failed to initialize {settings.tts_engine} engine: {e}")
 
     async def initialize_with_warmup(self, voice_manager) -> tuple[str, str, int]:
         """Initialize and warm up model.
@@ -62,28 +68,46 @@ class ModelManager:
             await self.initialize()
 
             # Load model
-            model_path = self._config.pytorch_kokoro_v1_file
-            await self.load_model(model_path)
+            engine = settings.tts_engine
+            if engine == "qwen3":
+                await self.load_model(settings.qwen3_model_path)
 
-            # Use paths module to get voice path
-            try:
-                voices = await paths.list_voices()
-                voice_path = await paths.get_voice_path(settings.default_voice)
+                # Warmup with short text using first available voice
+                from .qwen3_voice_manager import Qwen3VoiceManager
+                voice_mgr = Qwen3VoiceManager(settings.qwen3_voices_dir)
+                qwen3_voices = voice_mgr.list_voices()
+                if qwen3_voices:
+                    warmup_voice = qwen3_voices[0]
+                    logger.info(f"Warming up Qwen3-TTS with voice '{warmup_voice}'")
+                    async for _ in self.generate("Warmup text.", warmup_voice):
+                        pass
+                else:
+                    logger.warning("No Qwen3 voice profiles found — skipping warmup")
 
-                # Warm up with short text
-                warmup_text = "Warmup text for initialization."
-                # Use default voice name for warmup
-                voice_name = settings.default_voice
-                logger.debug(f"Using default voice '{voice_name}' for warmup")
-                async for _ in self.generate(warmup_text, (voice_name, voice_path)):
-                    pass
-            except Exception as e:
-                raise RuntimeError(f"Failed to get default voice: {e}")
+                ms = int((time.perf_counter() - start) * 1000)
+                logger.info(f"Warmup completed in {ms}ms")
+                return self._device, "qwen3", len(qwen3_voices)
+            else:
+                model_path = self._config.pytorch_kokoro_v1_file
+                await self.load_model(model_path)
 
-            ms = int((time.perf_counter() - start) * 1000)
-            logger.info(f"Warmup completed in {ms}ms")
+                # Use paths module to get voice path
+                try:
+                    voices = await paths.list_voices()
+                    voice_path = await paths.get_voice_path(settings.default_voice)
 
-            return self._device, "kokoro_v1", len(voices)
+                    # Warm up with short text
+                    warmup_text = "Warmup text for initialization."
+                    voice_name = settings.default_voice
+                    logger.debug(f"Using default voice '{voice_name}' for warmup")
+                    async for _ in self.generate(warmup_text, (voice_name, voice_path)):
+                        pass
+                except Exception as e:
+                    raise RuntimeError(f"Failed to get default voice: {e}")
+
+                ms = int((time.perf_counter() - start) * 1000)
+                logger.info(f"Warmup completed in {ms}ms")
+                return self._device, "kokoro_v1", len(voices)
         except FileNotFoundError as e:
             logger.error("""
 Model files not found! You need to download the Kokoro V1 model:
@@ -156,7 +180,7 @@ Model files not found! You need to download the Kokoro V1 model:
     @property
     def current_backend(self) -> str:
         """Get current backend type."""
-        return "kokoro_v1"
+        return settings.tts_engine
 
 
 async def get_manager(config: Optional[ModelConfig] = None) -> ModelManager:
