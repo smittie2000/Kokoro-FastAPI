@@ -1,6 +1,11 @@
 # Qwen3-TTS streaming dependencies
 # Install alongside base Kokoro-FastAPI deps:
 #   pip install -r requirements-qwen3.txt
+#
+# NOTE: qwen_tts package is vendored locally (./qwen_tts/) with:
+#   - Streaming patches from dffdeeq/Qwen3-TTS-streaming
+#   - Upstream decode fixes from QwenLM/Qwen3-TTS
+# No pip install needed for qwen_tts itself.
 transformers==4.57.3
 accelerate==1.12.0
 torchaudio
@@ -8,4 +13,3 @@ soundfile
 librosa
 einops
 onnxruntime
-qwen-tts @ git+https://github.com/dffdeeq/Qwen3-TTS-streaming.git
