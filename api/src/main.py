@@ -140,11 +140,28 @@ if settings.enable_web_player:
     app.include_router(web_router, prefix="/web")  # Web player static files
 
 
-# Health check endpoint
+# Health check endpoint — also serves as capability report for consumers (e.g. Laravel)
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy"}
+    """Health check with engine capabilities.
+
+    Consumers can read `capabilities` to discover what optimizations
+    are active (flash_attention, streaming_optimizations, etc.)
+    without needing shared config or env vars.
+    """
+    from .inference.model_manager import get_manager
+
+    result = {"status": "healthy", "engine": settings.tts_engine}
+
+    try:
+        manager = await get_manager()
+        backend = manager.get_backend()
+        if hasattr(backend, "capabilities"):
+            result["capabilities"] = backend.capabilities
+    except Exception:
+        pass  # Backend not yet initialized — still healthy, just no capabilities
+
+    return result
 
 
 @app.get("/v1/test")

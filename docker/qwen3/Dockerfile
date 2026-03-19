@@ -8,10 +8,11 @@ ENV PYTHONPATH=/app:/app/api
 ENV USE_GPU=true
 ENV TTS_ENGINE=qwen3
 
-# System dependencies
+# System dependencies (ninja-build required for flash-attn compilation)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-venv python3-pip \
+    python3 python3-venv python3-pip python3-dev \
     espeak-ng ffmpeg git curl sox libsox-dev \
+    ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app user
@@ -27,12 +28,18 @@ ENV PATH="/app/.venv/bin:$PATH"
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir -e ".[gpu]"
 
-# Install Qwen3-TTS streaming dependencies
+# Install Qwen3-TTS streaming dependencies (excluding flash-attn, installed separately)
 COPY requirements-qwen3.txt ./
-RUN pip install --no-cache-dir -r requirements-qwen3.txt
+RUN pip install --no-cache-dir $(grep -v 'flash-attn' requirements-qwen3.txt | grep -v '^#' | grep -v '^$')
 
-# Copy application code
+# Install flash-attn from source (separate layer — ~10min compile, cached independently)
+# --no-build-isolation: uses already-installed PyTorch to find CUDA headers
+# MAX_JOBS: limit parallel compilation to avoid OOM during Docker build
+RUN MAX_JOBS=4 pip install --no-cache-dir --no-build-isolation flash-attn>=2.7.0
+
+# Copy application code + vendored qwen_tts package
 COPY api/ ./api/
+COPY qwen_tts/ ./qwen_tts/
 COPY voices/ ./voices/
 
 # Create model cache directory

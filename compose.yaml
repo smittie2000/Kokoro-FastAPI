@@ -1,0 +1,72 @@
+# Docker Compose for Coolify deployment (standalone TTS service)
+# Deploy as a separate Coolify resource pointing at the tts-service repo
+#
+# Two engines:
+#   tts-qwen3  — GPU, voice cloning, higher quality (Qwen3-TTS 1.7B)
+#   tts-kokoro — CPU, built-in voices, lower latency (Kokoro V1)
+#
+# Eloise agents route to the appropriate engine based on voice config.
+
+services:
+  # Qwen3-TTS (GPU) — voice cloning, streaming
+  tts-qwen3:
+    build:
+      context: .
+      dockerfile: docker/qwen3/Dockerfile
+    restart: unless-stopped
+    labels:
+      - "app=${APP_NAME:-eloise}"
+      - "service=tts-qwen3"
+    expose:
+      - "8880"
+    environment:
+      - 'TTS_ENGINE=qwen3'
+      - 'USE_GPU=true'
+      - 'HF_HOME=/app/models'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - tts_qwen3_models:/app/models
+      - tts_qwen3_voices:/app/voices/qwen3
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8880/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+
+  # Kokoro V1 (CPU) — built-in voices, no GPU required
+  tts-kokoro:
+    build:
+      context: .
+      dockerfile: docker/cpu/Dockerfile
+    restart: unless-stopped
+    labels:
+      - "app=${APP_NAME:-eloise}"
+      - "service=tts-kokoro"
+    expose:
+      - "8880"
+    environment:
+      - 'TTS_ENGINE=kokoro'
+      - 'USE_GPU=false'
+    volumes:
+      - tts_kokoro_models:/app/api/src/models/v1_0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8880/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  tts_qwen3_models:
+    driver: local
+  tts_qwen3_voices:
+    driver: local
+  tts_kokoro_models:
+    driver: local

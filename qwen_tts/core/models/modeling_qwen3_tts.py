@@ -17,7 +17,7 @@
 import json
 import os
 from dataclasses import dataclass
-from typing import Callable, Optional, Generator
+from typing import Callable, Literal, Optional, Generator
 
 import huggingface_hub
 import numpy as np
@@ -27,7 +27,12 @@ from librosa.filters import mel as librosa_mel_fn
 from torch import nn
 from torch.nn import functional as F
 from transformers.activations import ACT2FN
-from transformers.cache_utils import Cache, DynamicCache
+from transformers.cache_utils import Cache, DynamicCache, StaticCache
+try:
+    from transformers.cache_utils import QuantizedCache
+    _has_quantized_cache = True
+except ImportError:
+    _has_quantized_cache = False
 from transformers.generation import GenerationMixin
 from transformers.integrations import use_kernel_forward_from_hub
 from transformers.masking_utils import (create_causal_mask,
@@ -76,10 +81,17 @@ def _sample_next_token(
     temperature: float = 1.0,
     top_k: int = 0,
     top_p: float = 1.0,
-    suppress_tokens: Optional[list[int]] = None,
+    suppress_tokens: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Sample next token from logits with temperature, top-k, top-p and token suppression."""
+    """Sample next token from logits with temperature, top-k, top-p and token suppression.
+
+    Args:
+        suppress_tokens: Pre-computed LongTensor of token indices to suppress.
+            Pass a GPU tensor to avoid per-call list→tensor conversion overhead.
+    """
     # Suppress tokens by setting their logits to -inf
+    # Clone is required: with torch.compile reduce-overhead, output tensors may be
+    # reused by CUDA graph replay — in-place modification would corrupt graph state.
     if suppress_tokens is not None and len(suppress_tokens) > 0:
         logits = logits.clone()
         logits[..., suppress_tokens] = float("-inf")
@@ -1826,7 +1838,7 @@ class Qwen3TTSTalkerForConditionalGeneration(Qwen3TTSTalkerTextPreTrainedModel, 
         """Enable fast codebook generation (bypasses HuggingFace generate() overhead)."""
         self._use_fast_codebook_gen = enable
 
-    def enable_compile(self, mode: str = "default"):
+    def enable_compile(self, mode: str = "reduce-overhead"):
         """
         Enable torch.compile for the talker model.
 
@@ -1834,18 +1846,19 @@ class Qwen3TTSTalkerForConditionalGeneration(Qwen3TTSTalkerTextPreTrainedModel, 
         Should be called once after model loading.
 
         Args:
-            mode: torch.compile mode - "default" is recommended for talker
-                  (reduce-overhead causes CUDA graph conflicts with KV-cache)
-
-        Note:
-            Unlike decoder/codebook predictor, talker should use "default" mode
-            because "reduce-overhead" mode's internal CUDA graphs conflict with
-            the external cudagraph_mark_step_begin() calls in stream_generate_pcm.
+            mode: torch.compile mode - "reduce-overhead" is recommended when using
+                  StaticCache (default in stream_generate_pcm). Use "default" if
+                  using DynamicCache, as reduce-overhead's CUDA graphs conflict
+                  with dynamically-sized cache tensors.
         """
+        # fullgraph=True enables CUDA graph capture but requires fixed tensor shapes
+        # (only safe with StaticCache / reduce-overhead). DynamicCache's growing
+        # tensors cause graph breaks, so fall back to fullgraph=False for "default".
+        use_fullgraph = mode in ("reduce-overhead", "max-autotune")
         self.model.forward = torch.compile(
             self.model.forward,
             mode=mode,
-            fullgraph=False,  # Allow graph breaks for flexibility
+            fullgraph=use_fullgraph,
         )
 
     @can_return_tuple
@@ -2120,7 +2133,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
             use_fast_codebook: Use fast codebook generation (bypasses HF generate() overhead)
             compile_codebook_predictor: Apply torch.compile to codebook predictor (default True)
             compile_talker: Apply torch.compile to talker model (default True).
-                           Note: Talker always uses "default" mode to avoid CUDA graph conflicts.
+                           Uses reduce-overhead mode with StaticCache for CUDA graph acceleration.
 
         Returns:
             self for method chaining
@@ -2146,9 +2159,10 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
             self.talker.enable_fast_codebook_gen(True)
 
         # Compile talker model for faster inference
-        # Note: Talker uses "default" mode to avoid CUDA graph conflicts with KV-cache
+        # StaticCache (default in stream_generate_pcm) enables reduce-overhead mode
+        # by providing fixed-size tensors that CUDA graphs can safely replay
         if compile_talker and use_compile:
-            talker_compile_mode = "default"  # reduce-overhead causes CUDA graph conflicts
+            talker_compile_mode = "reduce-overhead"
             print(f"[Talker] Compiling model with mode={talker_compile_mode}...")
             self.talker.enable_compile(mode=talker_compile_mode)
 
@@ -2634,9 +2648,13 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         emit_every_frames: int = 8,
         decode_window_frames: int = 80,
         overlap_samples: int = 0,
-        max_frames: int = 10000,
+        max_frames: int = 2048,
         # Optimization flags
         use_optimized_decode: bool = True,
+        # Cache type for KV cache
+        cache_type: Literal["static", "quantized", "dynamic"] = "static",
+        # Cancellation support (for interruption handling)
+        cancel_event: Optional[object] = None,
     ) -> Generator[tuple[np.ndarray, int], None, None]:
         """
         Stream audio generation, yielding PCM chunks as they are generated.
@@ -2659,10 +2677,22 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
             overlap_samples: Overlap samples for crossfade between chunks
             max_frames: Maximum number of codec frames to generate
             use_optimized_decode: Use CUDA graph optimized decode when available (default True)
+            cache_type: KV cache type for the talker. Options:
+                - "static" (default): Pre-allocated fixed-size cache. Enables torch.compile
+                  with reduce-overhead mode and CUDA graph capture for fastest decode.
+                - "quantized": Quantized KV cache (int4). Reduces memory ~4x for long audio
+                  at slight quality cost. Requires 'quanto' or 'hqq' package.
+                - "dynamic": Growing cache (legacy). Use if StaticCache causes issues.
+            cancel_event: Any object with an `is_set()` method (e.g., threading.Event,
+                asyncio.Event). When set, generation stops immediately at the next decode
+                step — no flush, no trailing audio. Worst-case latency from signal to stop
+                is one decode step (~2-5ms with torch.compile), not one emit cycle (~667ms).
 
         Yields:
             tuple[np.ndarray, int]: (pcm_chunk as float32 array, sample_rate)
         """
+        # Bind cancellation check once (avoid repeated getattr in hot loop)
+        _is_cancelled = cancel_event.is_set if cancel_event is not None else None
         # Build talker inputs
         talker_input_embeds, talker_attention_mask, trailing_text_hiddens, tts_pad_embed = \
             self._build_talker_inputs(
@@ -2677,12 +2707,41 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
 
         eos_id = self.config.talker_config.codec_eos_token_id
 
-        # Build suppress_tokens list (same as in generate())
+        # Build suppress_tokens as a GPU tensor (avoids Python list → tensor conversion every step)
         vocab_size = self.config.talker_config.vocab_size
-        suppress_tokens = [
-            i for i in range(vocab_size - 1024, vocab_size)
-            if i != eos_id
-        ]
+        suppress_tokens = torch.tensor(
+            [i for i in range(vocab_size - 1024, vocab_size) if i != eos_id],
+            device=self.talker.device,
+            dtype=torch.long,
+        )
+
+        # Pre-resolve loop-invariant lookups (avoid repeated hasattr/method calls in hot path)
+        _has_streaming_decode = use_optimized_decode and hasattr(self.speech_tokenizer, 'decode_streaming')
+        _samples_per_frame = self.speech_tokenizer.get_decode_upsample_rate()
+
+        # Pre-create KV cache for the talker decode loop
+        prefill_len = talker_input_embeds.shape[1]
+        if cache_type == "static":
+            talker_cache = StaticCache(
+                config=self.config.talker_config,
+                max_cache_len=prefill_len + max_frames + 1,
+            )
+        elif cache_type == "quantized":
+            if not _has_quantized_cache:
+                raise ImportError(
+                    "QuantizedCache requires 'quanto' or 'hqq' package. "
+                    "Install with: pip install quanto"
+                )
+            talker_cache = QuantizedCache(
+                backend="quanto",
+                config=self.config.talker_config,
+                nbits=4,
+                residual_length=128,
+            )
+        elif cache_type == "dynamic":
+            talker_cache = None  # DynamicCache created inside talker forward
+        else:
+            raise ValueError(f"Unknown cache_type={cache_type!r}. Use 'static', 'quantized', or 'dynamic'.")
 
         # Mark step begin for CUDA graphs (required for torch.compile with reduce-overhead)
         torch.compiler.cudagraph_mark_step_begin()
@@ -2698,7 +2757,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
             tts_pad_embed=tts_pad_embed,
             generation_step=None,
             past_hidden=None,
-            past_key_values=None,
+            past_key_values=talker_cache,
             subtalker_dosample=subtalker_dosample,
             subtalker_top_k=subtalker_top_k,
             subtalker_top_p=subtalker_top_p,
@@ -2738,6 +2797,11 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         total_frames_emitted = 0  # Track how many frames we've already emitted audio for
 
         for step_idx in range(max_frames):
+            # Check cancellation before each decode step (~2-5ms granularity)
+            # This enables immediate stop on user interruption (VAD, disconnect)
+            if _is_cancelled is not None and _is_cancelled():
+                return
+
             # Mark step begin for CUDA graphs to avoid tensor overwrite errors
             # This is required when using torch.compile with reduce-overhead mode
             torch.compiler.cudagraph_mark_step_begin()
@@ -2798,7 +2862,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
 
             # Use optimized decode path when available
             # Pass pad_to_size to ensure fixed tensor size for torch.compile
-            if use_optimized_decode and hasattr(self.speech_tokenizer, 'decode_streaming'):
+            if _has_streaming_decode:
                 wavs, sr = self.speech_tokenizer.decode_streaming(
                     window.to(self.talker.device),
                     use_optimized=True,
@@ -2811,9 +2875,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
             wav = wavs[0].astype(np.float32)
 
             # Extract only new samples (tail of decoded window)
-            # Use fixed upsample rate to avoid floating-point drift
-            samples_per_frame = self.speech_tokenizer.get_decode_upsample_rate()
-            step_samples = samples_per_frame * emit_every_frames
+            step_samples = _samples_per_frame * emit_every_frames
             chunk = wav[-step_samples:] if step_samples > 0 else wav
 
             # Crossfade with previous chunk tail for smooth transition
@@ -2823,7 +2885,8 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
                     head = _crossfade(decoded_tail[-ov:], chunk[:ov])
                     chunk = np.concatenate([head, chunk[ov:]], axis=0)
 
-            decoded_tail = chunk.copy()
+            if overlap_samples > 0:
+                decoded_tail = chunk.copy()
             total_frames_emitted = len(codes_buffer)  # Mark these frames as emitted
             yield chunk, sr
 

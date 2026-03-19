@@ -48,11 +48,9 @@ ENV PYTHONUNBUFFERED=1 \
     ESPEAK_DATA_PATH=/usr/share/espeak-ng-data \
     DEVICE="cpu"
 
+# Model download handled at runtime by entrypoint.sh (DOWNLOAD_MODEL=true)
+# This keeps the image small and works with persistent volume mounts.
 ENV DOWNLOAD_MODEL=true
-# Download model if enabled
-RUN if [ "$DOWNLOAD_MODEL" = "true" ]; then \
-    python download_model.py --output api/src/models/v1_0; \
-    fi
 
 # Run FastAPI server through entrypoint.sh
 CMD ["./entrypoint.sh"]

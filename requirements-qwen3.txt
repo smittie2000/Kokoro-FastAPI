@@ -6,10 +6,26 @@
 #   - Streaming patches from dffdeeq/Qwen3-TTS-streaming
 #   - Upstream decode fixes from QwenLM/Qwen3-TTS
 # No pip install needed for qwen_tts itself.
-transformers==4.57.3
-accelerate==1.12.0
+transformers==5.3.0
+accelerate==1.13.0
 torchaudio
 soundfile
 librosa
 einops
 onnxruntime
+
+# TorchAO — PyTorch-native quantization that composes with torch.compile.
+# Int4WeightOnlyConfig(group_size=128) recommended for RTX 4070 (tinygemm kernel).
+# Usage: pass quantization_config=TorchAoConfig(...) to from_pretrained().
+torchao
+
+# KV cache quantization backend (optional, for cache_type="quantized")
+# Reduces KV cache memory ~4x for long audio sequences.
+quanto
+
+# Flash Attention 2 — speeds up all attention layers (talker, whisper encoder, tokenizer).
+# Compiles from source against installed CUDA/PyTorch. Requires:
+#   - CUDA toolkit (nvcc) matching PyTorch's CUDA version
+#   - ninja (pip install ninja or apt install ninja-build)
+#   - Install with: pip install flash-attn --no-build-isolation
+flash-attn>=2.7.0

@@ -17,7 +17,7 @@ import base64
 import io
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Dict, Generator, List, Optional, Tuple, Union
+from typing import Any, Dict, Generator, List, Literal, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 import librosa
@@ -152,7 +152,7 @@ class Qwen3TTSModel:
                                generate() overhead (default True)
             compile_codebook_predictor: Apply torch.compile to codebook predictor (default True)
             compile_talker: Apply torch.compile to talker model (default True).
-                           Note: Talker always uses "default" mode to avoid CUDA graph conflicts.
+                           Uses reduce-overhead mode with StaticCache for CUDA graph acceleration.
 
         Returns:
             self for method chaining
@@ -702,9 +702,11 @@ class Qwen3TTSModel:
         emit_every_frames: int = 8,
         decode_window_frames: int = 80,
         overlap_samples: int = 0,
-        max_frames: int = 10000,
+        max_frames: int = 2048,
         # Optimization
         use_optimized_decode: bool = True,
+        cache_type: Literal["static", "quantized", "dynamic"] = "static",
+        cancel_event: Optional[object] = None,
         **kwargs,
     ) -> Generator[Tuple[np.ndarray, int], None, None]:
         """
@@ -726,6 +728,11 @@ class Qwen3TTSModel:
             max_frames: Maximum codec frames to generate.
             use_optimized_decode: Use CUDA graph optimized decode when available (default True).
                                   Call enable_streaming_optimizations() first for best performance.
+            cache_type: KV cache type ("static", "quantized", or "dynamic"). Default "static"
+                        enables CUDA graph acceleration with torch.compile reduce-overhead mode.
+            cancel_event: Any object with is_set() method. When set, generation stops
+                          immediately at the next decode step. Use threading.Event for HTTP
+                          handlers, or asyncio.Event for WebSocket handlers.
             **kwargs: Generation parameters (do_sample, top_k, top_p, temperature, etc.)
 
         Yields:
@@ -803,6 +810,8 @@ class Qwen3TTSModel:
             overlap_samples=overlap_samples,
             max_frames=max_frames,
             use_optimized_decode=use_optimized_decode,
+            cache_type=cache_type,
+            cancel_event=cancel_event,
             **gen_kwargs,
         ):
             yield chunk, sr

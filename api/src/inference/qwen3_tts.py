@@ -28,6 +28,19 @@ DECODE_WINDOW_FRAMES = 80    # Sliding decode window size
 MAX_FRAMES = 10000           # Safety limit (~14 minutes at 12Hz)
 
 
+def _detect_flash_attn() -> bool:
+    """Check if flash-attn package is installed and importable."""
+    try:
+        import flash_attn  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+# Detect once at import time (avoids repeated import attempts)
+FLASH_ATTN_AVAILABLE = _detect_flash_attn()
+
+
 class Qwen3TTS(BaseModelBackend):
     """Qwen3-TTS backend with true model-level streaming."""
 
@@ -35,6 +48,7 @@ class Qwen3TTS(BaseModelBackend):
         super().__init__()
         self._device = settings.get_device()
         self._model = None
+        self._attn_implementation: str | None = None
         self._voice_prompts: Dict[str, object] = {}  # Cached voice prompts
         self._voice_manager = Qwen3VoiceManager(voices_dir)
         self._voices_dir = voices_dir
@@ -52,16 +66,38 @@ class Qwen3TTS(BaseModelBackend):
             def _load_sync():
                 from qwen_tts import Qwen3TTSModel
 
-                dtype = torch.bfloat16 if self._device == "cuda" else torch.float32
-                device_map = self._device if self._device == "cuda" else None
+                # Resolve dtype and device_map per backend
+                if self._device == "cuda":
+                    dtype = torch.bfloat16
+                    device_map = "cuda"
+                elif self._device == "mps":
+                    dtype = torch.float32  # MPS has limited bf16 support
+                    device_map = "mps"
+                else:
+                    dtype = torch.float32
+                    device_map = None
+
+                # Auto-detect best attention implementation:
+                #   CUDA + flash-attn installed → flash_attention_2 (fastest)
+                #   CUDA without flash-attn    → sdpa (PyTorch native, still good)
+                #   MPS (Apple Silicon)        → sdpa (Metal-accelerated)
+                #   CPU                        → None (eager default)
+                attn_impl = None
+                if self._device == "cuda" and FLASH_ATTN_AVAILABLE:
+                    attn_impl = "flash_attention_2"
+                    logger.info("FlashAttention-2 detected — enabling for all attention layers")
+                elif self._device in ("cuda", "mps"):
+                    attn_impl = "sdpa"
+                    logger.info(f"Using PyTorch SDPA attention on {self._device}")
 
                 model = Qwen3TTSModel.from_pretrained(
                     path,
                     device_map=device_map,
                     dtype=dtype,
+                    attn_implementation=attn_impl,
                 )
 
-                # Enable streaming optimizations on GPU
+                # Enable streaming optimizations on CUDA (torch.compile + CUDA graphs)
                 if self._device == "cuda":
                     logger.info("Enabling streaming optimizations (torch.compile + CUDA graphs)")
                     model.enable_streaming_optimizations(
@@ -73,10 +109,10 @@ class Qwen3TTS(BaseModelBackend):
                         compile_codebook_predictor=True,
                     )
 
-                return model
+                return model, attn_impl
 
-            self._model = await asyncio.to_thread(_load_sync)
-            logger.info(f"Qwen3-TTS model loaded on {self._device}")
+            self._model, self._attn_implementation = await asyncio.to_thread(_load_sync)
+            logger.info(f"Qwen3-TTS model loaded on {self._device} (attn={self._attn_implementation or 'eager'})")
 
         except Exception as e:
             raise RuntimeError(f"Failed to load Qwen3-TTS model: {e}")
@@ -229,3 +265,16 @@ class Qwen3TTS(BaseModelBackend):
     @property
     def device(self) -> str:
         return self._device
+
+    @property
+    def capabilities(self) -> Dict[str, object]:
+        """Report runtime capabilities for health/status endpoints.
+
+        Consumed by Laravel via GET /health to display engine status.
+        """
+        return {
+            "attn_implementation": self._attn_implementation or "eager",
+            "flash_attn_available": FLASH_ATTN_AVAILABLE,
+            "streaming_optimizations": self._device == "cuda",
+            "device": self._device,
+        }

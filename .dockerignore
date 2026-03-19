@@ -34,6 +34,7 @@ tests/
 *.md
 *.txt
 !requirements.txt
+!requirements-qwen3.txt
 
 # Docker
 Dockerfile*
