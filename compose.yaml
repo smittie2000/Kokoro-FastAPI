@@ -1,58 +1,15 @@
 # Docker Compose for Coolify deployment (standalone TTS service)
 # Deploy as a separate Coolify resource pointing at the tts-service repo
 #
-# Profiles (set COMPOSE_PROFILES env var in Coolify):
-#   gpu    — Deploys tts-qwen3 (requires NVIDIA GPU + Container Toolkit)
-#   cpu    — Deploys tts-kokoro (CPU-only, no GPU required)
+# Deploy ONE of these compose files per Coolify resource:
+#   compose.yaml       — Kokoro CPU (default, works on any host)
+#   compose.gpu.yaml   — Qwen3-TTS GPU (requires NVIDIA GPU + Container Toolkit)
 #
-# Examples:
-#   COMPOSE_PROFILES=cpu              → Kokoro only (no GPU host)
-#   COMPOSE_PROFILES=gpu              → Qwen3 only (GPU host)
-#   COMPOSE_PROFILES=cpu,gpu          → Both engines (GPU host, full capability)
-#
-# Default (no COMPOSE_PROFILES set): nothing starts — must choose a profile.
+# For hosts with GPU that want both engines, deploy each as a separate
+# Coolify resource pointing at the appropriate compose file.
 
 services:
-  # Qwen3-TTS (GPU) — voice cloning, streaming
-  tts-qwen3:
-    profiles: ["gpu"]
-    build:
-      context: .
-      dockerfile: docker/qwen3/Dockerfile
-    restart: unless-stopped
-    labels:
-      - "app=${APP_NAME:-eloise}"
-      - "service=tts-qwen3"
-    expose:
-      - "8880"
-    environment:
-      - 'TTS_ENGINE=qwen3'
-      - 'USE_GPU=true'
-      - 'HF_HOME=/app/models'
-      - 'API_KEYS=${API_KEYS:-}'
-      - 'DEBUG_API_KEY=${DEBUG_API_KEY:-}'
-      - 'ENABLE_WEB_PLAYER=${ENABLE_WEB_PLAYER:-false}'
-      - 'ENABLE_DOCS=${ENABLE_DOCS:-false}'
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    volumes:
-      - tts_qwen3_models:/app/models
-      - tts_qwen3_voices:/app/voices/qwen3
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8880/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 180s
-
-  # Kokoro V1 (CPU) — built-in voices, no GPU required
   tts-kokoro:
-    profiles: ["cpu"]
     build:
       context: .
       dockerfile: docker/cpu/Dockerfile
@@ -79,9 +36,5 @@ services:
       start_period: 120s
 
 volumes:
-  tts_qwen3_models:
-    driver: local
-  tts_qwen3_voices:
-    driver: local
   tts_kokoro_models:
     driver: local

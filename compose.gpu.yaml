@@ -1,0 +1,48 @@
+# Docker Compose for Coolify deployment — Qwen3-TTS (GPU)
+# Requires NVIDIA GPU + Container Toolkit on the host.
+#
+# Deploy as a separate Coolify resource:
+#   Repository: tts-service repo
+#   Compose file: compose.gpu.yaml
+
+services:
+  tts-qwen3:
+    build:
+      context: .
+      dockerfile: docker/qwen3/Dockerfile
+    restart: unless-stopped
+    labels:
+      - "app=${APP_NAME:-eloise}"
+      - "service=tts-qwen3"
+    expose:
+      - "8880"
+    environment:
+      - 'TTS_ENGINE=qwen3'
+      - 'USE_GPU=true'
+      - 'HF_HOME=/app/models'
+      - 'API_KEYS=${API_KEYS:-}'
+      - 'DEBUG_API_KEY=${DEBUG_API_KEY:-}'
+      - 'ENABLE_WEB_PLAYER=${ENABLE_WEB_PLAYER:-false}'
+      - 'ENABLE_DOCS=${ENABLE_DOCS:-false}'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - tts_qwen3_models:/app/models
+      - tts_qwen3_voices:/app/voices/qwen3
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8880/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+
+volumes:
+  tts_qwen3_models:
+    driver: local
+  tts_qwen3_voices:
+    driver: local
