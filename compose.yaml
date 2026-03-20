@@ -1,15 +1,21 @@
 # Docker Compose for Coolify deployment (standalone TTS service)
 # Deploy as a separate Coolify resource pointing at the tts-service repo
 #
-# Two engines:
-#   tts-qwen3  — GPU, voice cloning, higher quality (Qwen3-TTS 1.7B)
-#   tts-kokoro — CPU, built-in voices, lower latency (Kokoro V1)
+# Profiles (set COMPOSE_PROFILES env var in Coolify):
+#   gpu    — Deploys tts-qwen3 (requires NVIDIA GPU + Container Toolkit)
+#   cpu    — Deploys tts-kokoro (CPU-only, no GPU required)
 #
-# Eloise agents route to the appropriate engine based on voice config.
+# Examples:
+#   COMPOSE_PROFILES=cpu              → Kokoro only (no GPU host)
+#   COMPOSE_PROFILES=gpu              → Qwen3 only (GPU host)
+#   COMPOSE_PROFILES=cpu,gpu          → Both engines (GPU host, full capability)
+#
+# Default (no COMPOSE_PROFILES set): nothing starts — must choose a profile.
 
 services:
   # Qwen3-TTS (GPU) — voice cloning, streaming
   tts-qwen3:
+    profiles: ["gpu"]
     build:
       context: .
       dockerfile: docker/qwen3/Dockerfile
@@ -46,6 +52,7 @@ services:
 
   # Kokoro V1 (CPU) — built-in voices, no GPU required
   tts-kokoro:
+    profiles: ["cpu"]
     build:
       context: .
       dockerfile: docker/cpu/Dockerfile
