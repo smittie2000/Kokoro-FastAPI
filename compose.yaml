@@ -23,6 +23,8 @@ services:
       - 'TTS_ENGINE=qwen3'
       - 'USE_GPU=true'
       - 'HF_HOME=/app/models'
+      - 'API_KEYS=${API_KEYS:-}'
+      - 'DEBUG_API_KEY=${DEBUG_API_KEY:-}'
     deploy:
       resources:
         reservations:
@@ -54,6 +56,8 @@ services:
     environment:
       - 'TTS_ENGINE=kokoro'
       - 'USE_GPU=false'
+      - 'API_KEYS=${API_KEYS:-}'
+      - 'DEBUG_API_KEY=${DEBUG_API_KEY:-}'
     volumes:
       - tts_kokoro_models:/app/api/src/models/v1_0
     healthcheck:
