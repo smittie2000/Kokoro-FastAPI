@@ -77,6 +77,21 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["*"]  # CORS origins for web player
     cors_enabled: bool = True  # Whether to enable CORS
 
+    # Authentication
+    # API_KEYS: comma-separated list of valid Bearer tokens for /v1/* and /web/* routes.
+    # Empty = auth disabled (backwards-compatible for local dev and other fork users).
+    api_keys: str = ""
+    # DEBUG_API_KEY: single Bearer token for /debug/* and /dev/* routes.
+    # Empty = debug endpoints return 403 (disabled entirely in production).
+    debug_api_key: str = ""
+
+    @property
+    def api_key_set(self) -> frozenset[str]:
+        """Parse API_KEYS into a set for O(1) lookup."""
+        if not self.api_keys:
+            return frozenset()
+        return frozenset(k.strip() for k in self.api_keys.split(",") if k.strip())
+
     # Temp File Settings for WEB Ui
     temp_file_dir: str = "api/temp_files"  # Directory for temporary audio files (relative to project root)
     max_temp_dir_size_mb: int = 2048  # Maximum size of temp directory (2GB)
