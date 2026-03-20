@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     }
 
     # Web Player Settings
-    enable_web_player: bool = True  # Whether to serve the web player UI
+    enable_web_player: bool = False  # Web player UI — disabled by default in production
     web_player_path: str = "web"  # Path to web player static files
     cors_origins: list[str] = ["*"]  # CORS origins for web player
     cors_enabled: bool = True  # Whether to enable CORS
@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     # DEBUG_API_KEY: single Bearer token for /debug/* and /dev/* routes.
     # Empty = debug endpoints return 403 (disabled entirely in production).
     debug_api_key: str = ""
+    # ENABLE_DOCS: expose /docs, /redoc, /openapi.json — disabled by default in production.
+    enable_docs: bool = False
 
     @property
     def api_key_set(self) -> frozenset[str]:

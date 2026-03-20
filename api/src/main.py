@@ -115,12 +115,16 @@ async def lifespan(app: FastAPI):
 
 
 # Initialize FastAPI app
+# Docs (Swagger UI, ReDoc, OpenAPI schema) disabled by default in production.
+# Set ENABLE_DOCS=true to expose /docs, /redoc, /openapi.json.
 app = FastAPI(
     title=settings.api_title,
     description=settings.api_description,
     version=settings.api_version,
     lifespan=lifespan,
-    openapi_url="/openapi.json",  # Explicitly enable OpenAPI schema
+    openapi_url="/openapi.json" if settings.enable_docs else None,
+    docs_url="/docs" if settings.enable_docs else None,
+    redoc_url="/redoc" if settings.enable_docs else None,
 )
 
 # Add CORS middleware if enabled

@@ -25,6 +25,8 @@ services:
       - 'HF_HOME=/app/models'
       - 'API_KEYS=${API_KEYS:-}'
       - 'DEBUG_API_KEY=${DEBUG_API_KEY:-}'
+      - 'ENABLE_WEB_PLAYER=${ENABLE_WEB_PLAYER:-false}'
+      - 'ENABLE_DOCS=${ENABLE_DOCS:-false}'
     deploy:
       resources:
         reservations:
@@ -58,6 +60,8 @@ services:
       - 'USE_GPU=false'
       - 'API_KEYS=${API_KEYS:-}'
       - 'DEBUG_API_KEY=${DEBUG_API_KEY:-}'
+      - 'ENABLE_WEB_PLAYER=${ENABLE_WEB_PLAYER:-false}'
+      - 'ENABLE_DOCS=${ENABLE_DOCS:-false}'
     volumes:
       - tts_kokoro_models:/app/api/src/models/v1_0
     healthcheck:
