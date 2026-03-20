@@ -9,7 +9,7 @@ from pathlib import Path
 
 import torch
 import uvicorn
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
@@ -18,6 +18,7 @@ from .routers.debug import router as debug_router
 from .routers.development import router as dev_router
 from .routers.openai_compatible import router as openai_router
 from .routers.web_player import router as web_router
+from .core.auth import require_api_key, require_debug_key
 
 
 def setup_logger():
@@ -132,12 +133,12 @@ if settings.cors_enabled:
         allow_headers=["*"],
     )
 
-# Include routers
-app.include_router(openai_router, prefix="/v1")
-app.include_router(dev_router)  # Development endpoints
-app.include_router(debug_router)  # Debug endpoints
+# Include routers with auth dependencies
+app.include_router(openai_router, prefix="/v1", dependencies=[Depends(require_api_key)])
+app.include_router(dev_router, dependencies=[Depends(require_debug_key)])
+app.include_router(debug_router, dependencies=[Depends(require_debug_key)])
 if settings.enable_web_player:
-    app.include_router(web_router, prefix="/web")  # Web player static files
+    app.include_router(web_router, prefix="/web", dependencies=[Depends(require_api_key)])
 
 
 # Health check endpoint — also serves as capability report for consumers (e.g. Laravel)
