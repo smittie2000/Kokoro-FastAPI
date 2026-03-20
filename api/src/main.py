@@ -169,11 +169,5 @@ async def health_check():
     return result
 
 
-@app.get("/v1/test")
-async def test_endpoint():
-    """Test endpoint to verify routing"""
-    return {"status": "ok"}
-
-
 if __name__ == "__main__":
     uvicorn.run("api.src.main:app", host=settings.host, port=settings.port, reload=True)
